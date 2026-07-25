@@ -82,11 +82,7 @@ Free. No Azure subscription required. Roughly eight minutes.
 Go to **entra.microsoft.com**. In the left navigation, expand **Entra ID**, then choose
 **App registrations**.
 
-> **Common mistake:** there is a second "Applications" menu under *Global Secure Access*. It shows
-> Quick Access, Application discovery, and Enterprise applications, but no App registrations. If
-> you see the screen below, you're in the wrong place; scroll up to Entra ID instead.
 
-![Wrong menu: Applications under Global Secure Access, no App registrations entry](images/01-wrong-menu.png)
 
 Shortcut: paste this straight into the address bar.
 
@@ -182,9 +178,8 @@ source .venv/bin/activate
 pip install "mcp[cli]" msal httpx
 ```
 
-Your project folder should end up looking like this, with the six screenshots from Part A sitting
-in their own `images` folder next to this guide, and the server and its virtual environment in
-`msgraph-mcp`:
+Your project folder may end up looking like this, the server and its virtual environment in
+`msgraph-mcp` (ignore the images folder, it's just for this guide):
 
 ![Project folder layout: images, msgraph-mcp with its venv, and this guide](images/07-folder-structure.png)
 
