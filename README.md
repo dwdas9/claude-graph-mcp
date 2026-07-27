@@ -1,173 +1,147 @@
-# Connecting Claude to a personal Outlook / Hotmail account
+# Connecting Claude Desktop to a personal Outlook or Hotmail account
 
-A Microsoft Graph MCP server for personal Microsoft accounts: read and search mail, create
-drafts, manage calendar, and browse OneDrive.
+![](images/08-how-it-works.jpg)
+
+Claude Desktop can connect to Microsoft 365, but the built-in Microsoft connector is intended for work and school accounts. If you try to sign in with a personal address such as `@hotmail.com`, `@outlook.com`, or `@live.com`, the authentication is rejected.
+
+That does not mean Microsoft Graph cannot access a personal Microsoft account. It can. The restriction comes from the way Anthropic's connector application is registered.
+
+The practical workaround is to register your own Microsoft application, allow personal Microsoft accounts, and connect it to a small local MCP server. Claude Desktop can then search your mail, create drafts, work with your calendar, and read files from OneDrive.
+
+This guide walks through the complete setup on macOS.
+
+## What this setup can do
+
+| Capability                      | Available?     |
+| ------------------------------- | -------------- |
+| Read and search mail            | Yes            |
+| Create drafts and draft replies | Yes            |
+| Send mail                       | No             |
+| Read and create calendar events | Yes            |
+| Search and read OneDrive files  | Yes, read only |
+
+The server does not request the `Mail.Send` permission. Claude can prepare a draft, but you must review and send it yourself from Outlook.
+
+This is intentional. It gives Claude access to the parts that are useful for research and drafting without allowing it to send messages from your account.
+
+## What you are setting up
+
+The setup has three parts:
+
+1. A Microsoft Entra application registration that allows personal Microsoft accounts.
+2. A local Python MCP server that communicates with Microsoft Graph.
+3. A Claude Desktop configuration entry that launches the server.
+
+You only need to sign in manually once. After that, the Microsoft authentication library uses the cached token to renew access in the background.
 
 ---
 
-## Background
+# Part A: Register the application in Microsoft Entra
 
-Anthropic's Microsoft 365 connector registers its OAuth application for **work and school
-tenants only**. Personal Microsoft accounts (`@hotmail.com`, `@outlook.com`, `@live.com`) are
-rejected at authentication.
+This does not require a paid Azure subscription.
 
-Microsoft Graph itself has no such restriction. The limit is purely in how that application was
-registered. This guide registers your own application, with an account-type setting that accepts
-personal accounts, and points a small local MCP server at it.
+## A1. Open App registrations
 
-## What this can and cannot do
+Go to **entra.microsoft.com**.
 
-| Capability | Granted? |
-|---|---|
-| Read and search mail | Yes |
-| Create drafts and draft replies | Yes |
-| **Send mail** | **No, scope deliberately not requested** |
-| Read and create calendar events | Yes |
-| Search and read OneDrive files | Yes (read only) |
+In the left navigation, expand **Entra ID**, then select **App registrations**.
 
-> **On sending:** the `Mail.Send` scope is not requested, so the server is *incapable* of sending
-> mail even if asked. Claude composes a draft; you review and send it yourself from Outlook.
-
----
-
-## Architecture
-
-Three pieces do the work, and each has exactly one job.
-
-**The Entra app registration** is the server's identity with Microsoft. It's a public client, so
-there's no secret to store, since a script running on your own machine has nowhere safe to keep
-one. It's registered to accept personal Microsoft accounts, and it's granted a fixed list of
-delegated permissions. Those permissions are a ceiling, not a suggestion: the server can never do
-more than what's granted here, no matter what a tool function tries to call. `Mail.Send` is
-deliberately absent, so sending mail is impossible at the Graph level, not merely unimplemented in
-the code.
-
-**MSAL and the token cache** handle authentication. First sign-in uses a device-code flow: the
-server prints a code, you enter it at microsoft.com/devicelogin in a browser, and Microsoft issues
-a token pair, an access token and a refresh token. The refresh token is written to
-`~/.msgraph-mcp/token_cache.json`. Every later call to Graph asks MSAL for a token first; MSAL
-uses the cached refresh token to get a fresh access token silently, with no browser involved,
-until the refresh token itself expires or is revoked.
-
-**The MCP server** (`graph_mcp_server.py`) is a FastMCP application speaking stdio JSON-RPC,
-which is how Claude Desktop expects to talk to it. Claude Desktop launches the script as a
-subprocess on startup and keeps it running for the session. Each tool, `search_mail`,
-`create_draft`, `list_events`, and the rest, is a plain Python function decorated with
-`@mcp.tool()`. FastMCP reads the function's type hints and docstring to build the tool schema
-Claude sees. Calling a tool means Claude sends a JSON-RPC request over stdin, the function runs,
-and its return value goes back over stdout.
-
-A single request, end to end: Claude decides to call `search_mail`, FastMCP dispatches to the
-Python function, the function asks MSAL for a token (cached and silent, in the normal case), then
-makes an authenticated GET against `https://graph.microsoft.com/v1.0/me/messages`, and the JSON
-response is reshaped into the compact structure the tool returns. Nothing here talks to any
-Anthropic service directly. Claude Desktop only ever sees stdio, and Microsoft Graph only ever
-sees an OAuth bearer token.
+You can also open the page directly:
 
 ```text
-Claude Desktop  <-- stdio JSON-RPC -->  graph_mcp_server.py  <-- MSAL token -->  token_cache.json
-                                                |
-                                                v
-                                     Microsoft Graph (v1.0 REST API)
-```
-
----
-
-# Part A: Register the application in Entra
-
-Free. No Azure subscription required. Roughly eight minutes.
-
-## A1. Find App registrations
-
-Go to **entra.microsoft.com**. In the left navigation, expand **Entra ID**, then choose
-**App registrations**.
-
-
-
-Shortcut: paste this straight into the address bar.
-
-```
 https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade
 ```
 
-## A2. Create the registration
+## A2. Create a new registration
 
-Click **New registration** and fill it in exactly as shown:
+Select **New registration** and enter the following:
 
-- **Name:** `claude-graph-mcp`
-- **Supported account types:** Accounts in any organizational directory and **personal Microsoft accounts**
-- **Redirect URI:** leave blank
+* **Name:** `claude-graph-mcp`
+* **Supported account types:** Accounts in any organisational directory and personal Microsoft accounts
+* **Redirect URI:** Leave this blank
 
-> **This is the setting that matters.** The account-type choice is the entire reason the built-in
-> connector fails. Any other option here and your personal account will be rejected exactly as
-> before.
+The account type is the important part. It must include personal Microsoft accounts. Otherwise, a Hotmail, Outlook.com, or Live.com account will still be rejected.
 
 ![The registration form, correctly filled](images/02-register-app.png)
 
 ## A3. Copy the client ID
 
-After registering you land on the overview page. Copy the **Application (client) ID**. You'll need
-it twice, once for first sign-in and once in the Claude Desktop config.
+After creating the registration, Microsoft opens the application's overview page.
 
-Confirm **Supported account types** reads *All Microsoft account users*. If it says anything else,
-the registration was made with the wrong option and should be redone.
+Copy the **Application (client) ID**. You will use it during the first sign-in and again in the Claude Desktop configuration.
+
+Also check the **Supported account types** value. It should say:
+
+```text
+All Microsoft account users
+```
+
+If it shows a different value, it is easier to recreate the registration with the correct account type.
 
 ![Overview page showing client ID and supported account types](images/03-overview-client-id.png)
 
-> You may see a banner warning that end users cannot consent to newly registered multitenant apps
-> without a verified publisher. That restriction applies to users consenting *inside Entra tenants*;
-> consenting as a personal Microsoft account is normally unaffected. If you do hit a consent error
-> later, note the exact wording before changing anything.
+You may see a warning about consent for newly registered multitenant applications without a verified publisher. This usually applies to users consenting inside managed Entra tenants. If Microsoft shows a consent error later, keep the exact wording of the error before changing the configuration.
 
-## A4. Allow public client flows
+## A4. Enable public client flows
 
-Left menu → **Authentication** → **Settings** tab → set **Allow public client flows** to
-**Enabled** → **Save**.
+In the left menu:
 
-> Device-code authentication will not work without this. It's the step most commonly missed, and
-> the usual cause if sign-in fails in Part C. **The toggle isn't committed until you press Save.**
+1. Select **Authentication**.
+2. Open the **Settings** tab.
+3. Set **Allow public client flows** to **Enabled**.
+4. Select **Save**.
+
+The device-code sign-in used later depends on this setting. Make sure you press **Save**, as changing the toggle by itself does not commit the setting.
 
 ![Allow public client flows set to Enabled](images/04-public-client-flows.png)
 
-## A5. Add the Graph permissions
+## A5. Add Microsoft Graph permissions
 
-Left menu → **API permissions** → **Add a permission** → **Microsoft Graph** →
-**Delegated permissions**.
+Go to:
+
+**API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated permissions**
 
 ![The Request API permissions pane](images/05-add-permission.png)
 
-Add these five. `User.Read` is usually present by default:
+Add the following permissions:
 
+```text
+User.Read
+Mail.ReadWrite
+Calendars.ReadWrite
+Files.Read.All
+offline_access
 ```
-User.Read              (usually already there)
-Mail.ReadWrite         read mail and create drafts
-Calendars.ReadWrite    read and create events
-Files.Read.All         read OneDrive
-offline_access         keep the session alive
-```
 
-> **Do not add `Mail.Send`.** Its absence is what guarantees the server cannot send mail on your
-> behalf.
->
-> `offline_access` sits under an OpenId grouping rather than with the resource scopes, so search
-> for it by name.
+What they are used for:
 
-## A6. Confirm the final list
+| Permission            | Purpose                                              |
+| --------------------- | ---------------------------------------------------- |
+| `User.Read`           | Identify the signed-in Microsoft account             |
+| `Mail.ReadWrite`      | Read mail and create drafts                          |
+| `Calendars.ReadWrite` | Read and create calendar events                      |
+| `Files.Read.All`      | Read files from OneDrive                             |
+| `offline_access`      | Renew access without asking you to sign in each time |
 
-Your configured permissions should match this exactly: five delegated Graph permissions, no
-`Mail.Send`.
+`User.Read` is often added automatically.
+
+The `offline_access` permission may appear under an OpenID-related group rather than beside the other resource permissions. Searching for it by name is usually easier.
+
+Do not add `Mail.Send`.
+
+## A6. Check the final permission list
+
+The final list should contain five delegated Microsoft Graph permissions and should not contain `Mail.Send`.
 
 ![Final permissions list](images/06-final-permissions.png)
 
-> Ignore the **Grant admin consent** button. It consents on behalf of the Entra tenant you
-> registered the app in, which does nothing for a personal account. The consent that matters
-> happens in the browser during Part C.
+You do not need to use **Grant admin consent** for this personal-account setup. The relevant consent happens when you sign in with the personal Microsoft account in Part C.
 
 ---
 
-# Part B: Install locally
+# Part B: Install the MCP server locally
 
-Save `graph_mcp_server.py` to your home folder, then:
+Save `graph_mcp_server.py` in your Downloads folder, then run:
 
 ```bash
 mkdir -p ~/msgraph-mcp
@@ -178,58 +152,105 @@ source .venv/bin/activate
 pip install "mcp[cli]" msal httpx
 ```
 
-Your project folder may end up looking like this, the server and its virtual environment in
-`msgraph-mcp` (ignore the images folder, it's just for this guide):
+This creates a folder called `msgraph-mcp`, moves the server into it, creates a Python virtual environment, and installs the required packages.
+
+Your project folder should look similar to this:
 
 ![Project folder layout: images, msgraph-mcp with its venv, and this guide](images/07-folder-structure.png)
 
+The images folder shown in the screenshot belongs to this guide. The MCP server itself only needs the Python file and its virtual environment.
+
 ---
 
-# Part C: Sign in once
+# Part C: Sign in to the personal Microsoft account
 
-Claude Desktop can't show you an interactive login prompt, so do the first sign-in yourself in a
-terminal. The `login` subcommand forces the device-code flow and exits once the token is cached:
+Claude Desktop cannot display the device-code prompt from the MCP server in a useful way, so the first sign-in should be completed manually in Terminal.
+
+From the `msgraph-mcp` folder, run:
 
 ```bash
 export MSGRAPH_CLIENT_ID="<your client ID from A3>"
 python graph_mcp_server.py login
 ```
 
-It prints a code and a URL. Go to **microsoft.com/devicelogin**, enter the code, and sign in
-**with your personal Microsoft account**, not the account you used to register the app. Approve
-the permissions.
+The script prints a code and asks you to open:
 
-When it prints `Authenticated. Token cached at …` and exits on its own, you're done. No Ctrl-C
-needed. The refresh token is now cached at `~/.msgraph-mcp/token_cache.json` and renews silently
-from here on.
+```text
+https://microsoft.com/devicelogin
+```
 
-> **Why a subcommand?** Running the server with no arguments starts the stdio JSON-RPC loop and
-> blocks. It never triggers auth, because sign-in only happens lazily when a *tool* is called.
-> `login` calls the token path directly so the device prompt actually appears.
+Enter the code and sign in with the personal Microsoft account whose mailbox you want Claude to access.
 
-> **The two accounts do different jobs.** The account you registered the app with owns the
-> registration. Your personal account is the mailbox being accessed. Signing in with the wrong one
-> here is the second most common mistake after skipping A4.
+This may be different from the Microsoft account you used while creating the Entra application. The account used for the Entra portal owns the application registration. The account used during this login is the mailbox, calendar, and OneDrive account that the MCP server will access.
+
+Approve the requested permissions.
+
+When the terminal shows a message similar to this, the sign-in is complete:
+
+```text
+Authenticated. Token cached at …
+```
+
+The script exits by itself. You do not need to press `Ctrl-C`.
+
+The token cache is stored here:
+
+```text
+~/.msgraph-mcp/token_cache.json
+```
+
+Later requests use the cached sign-in and normally do not open the browser again.
+
+## Why the `login` command is needed
+
+Running this command:
+
+```bash
+python graph_mcp_server.py
+```
+
+starts the MCP server and waits for JSON-RPC requests through standard input. It does not immediately perform authentication.
+
+The `login` subcommand calls the authentication path directly, displays the device code, saves the token cache, and exits. This makes the first sign-in much easier to complete and troubleshoot.
 
 ---
 
-# Part D: Connect Claude Desktop
+# Part D: Add the server to Claude Desktop
 
-Open the config file:
+Claude Desktop stores its local MCP server configuration in:
+
+```text
+~/Library/Application Support/Claude/claude_desktop_config.json
+```
+
+Open the file in TextEdit:
 
 ```bash
-mkdir -p ~/Library/Application\ Support/Claude
 open -e ~/Library/Application\ Support/Claude/claude_desktop_config.json
 ```
 
-Paste this, replacing the username in the paths and the client ID with your own:
+If Terminal reports that the folder or file does not exist, create it first:
+
+```bash
+mkdir -p ~/Library/Application\ Support/Claude
+touch ~/Library/Application\ Support/Claude/claude_desktop_config.json
+open -e ~/Library/Application\ Support/Claude/claude_desktop_config.json
+```
+
+## If the file is empty
+
+Paste the following configuration.
+
+Replace `YOUR_USERNAME` with your macOS username, and replace the client ID with the value copied in Part A.
 
 ```json
 {
   "mcpServers": {
     "microsoft-graph": {
       "command": "/Users/YOUR_USERNAME/msgraph-mcp/.venv/bin/python",
-      "args": ["/Users/YOUR_USERNAME/msgraph-mcp/graph_mcp_server.py"],
+      "args": [
+        "/Users/YOUR_USERNAME/msgraph-mcp/graph_mcp_server.py"
+      ],
       "env": {
         "MSGRAPH_CLIENT_ID": "<your client ID from A3>"
       }
@@ -238,53 +259,298 @@ Paste this, replacing the username in the paths and the client ID with your own:
 }
 ```
 
-> Use absolute paths. Claude Desktop doesn't expand `~` or read your shell PATH. Then quit Claude
-> Desktop completely with **Cmd-Q** (closing the window isn't enough) and reopen it.
+## If the file already contains other MCP servers
+
+Do not replace the existing contents. Add `microsoft-graph` inside the existing `mcpServers` object.
+
+For example:
+
+```json
+{
+  "mcpServers": {
+    "existing-server": {
+      "command": "/path/to/existing/server"
+    },
+    "microsoft-graph": {
+      "command": "/Users/YOUR_USERNAME/msgraph-mcp/.venv/bin/python",
+      "args": [
+        "/Users/YOUR_USERNAME/msgraph-mcp/graph_mcp_server.py"
+      ],
+      "env": {
+        "MSGRAPH_CLIENT_ID": "<your client ID from A3>"
+      }
+    }
+  }
+}
+```
+
+Make sure there is a comma between the existing server entry and the new `microsoft-graph` entry.
+
+Use absolute paths. Claude Desktop does not reliably expand `~`, and it does not use the same shell environment as Terminal.
+
+After saving the file:
+
+1. Quit Claude Desktop completely with **Cmd-Q**.
+2. Open Claude Desktop again.
+3. Start a new chat.
+
+Closing only the Claude window is not enough. Claude Desktop must restart before it reloads the MCP server configuration.
+
+
+Open the Claude Desktop configuration file:
+
+```bash
+mkdir -p ~/Library/Application\ Support/Claude
+open -e ~/Library/Application\ Support/Claude/claude_desktop_config.json
+```
+
+Add the following configuration.
+
+Replace `YOUR_USERNAME` with your macOS username, and replace the client ID with the value copied in Part A.
+
+```json
+{
+  "mcpServers": {
+    "microsoft-graph": {
+      "command": "/Users/YOUR_USERNAME/msgraph-mcp/.venv/bin/python",
+      "args": [
+        "/Users/YOUR_USERNAME/msgraph-mcp/graph_mcp_server.py"
+      ],
+      "env": {
+        "MSGRAPH_CLIENT_ID": "<your client ID from A3>"
+      }
+    }
+  }
+}
+```
+
+Use absolute paths. Claude Desktop does not reliably expand `~`, and it does not use your normal shell environment in the same way Terminal does.
+
+After saving the file:
+
+1. Quit Claude Desktop completely with **Cmd-Q**.
+2. Open Claude Desktop again.
+3. Start a new chat.
+
+Closing only the Claude window is not enough because the application must restart before it reloads the MCP server configuration.
 
 ---
 
-# Part E: Test
+# Part E: Test the connection
 
-In a new chat in Claude Desktop:
+In a new Claude Desktop chat, enter:
 
-```
+```text
 Use whoami to check which Microsoft account is connected
 ```
 
-If it returns your own address, everything is working. Then try a real search against your own
-mailbox to confirm the whole path works end to end.
+Claude should call the `whoami` MCP tool and return the personal Microsoft account you used in Part C.
 
-## Tools available
+After that, test the mailbox connection with a simple request such as:
 
-| Tool | What it does |
-|---|---|
-| `whoami` | Confirm which account is connected |
-| `search_mail` | Full-text search across the mailbox |
-| `list_recent_mail` | Recent messages in a folder (inbox, sentitems, drafts) |
-| `read_message` | Full body of one message |
-| `create_draft` | Compose a draft, never sends |
-| `reply_draft` | Draft a reply to an existing thread |
-| `list_events` | Calendar events in a date range |
-| `create_event` | Create a calendar event |
-| `search_onedrive` | Search OneDrive files |
-| `list_onedrive_folder` | Browse a OneDrive folder |
-| `read_onedrive_file` | Read a text-based file's contents |
+```text
+Search my mailbox for recent emails from Microsoft
+```
 
-## Troubleshooting
+This checks the complete path:
 
-**Device flow fails to start.** Almost always A4: Allow public client flows still disabled, or
-enabled but not saved.
+```text
+Claude Desktop
+    → local MCP server
+    → cached Microsoft sign-in
+    → Microsoft Graph
+    → your personal mailbox
+```
 
-**Signed in but `whoami` returns the wrong account.** You authenticated with the account you
-registered the app with instead of your personal one. Delete `~/.msgraph-mcp/token_cache.json`
-and repeat Part C, signing in with the personal account this time.
+## Tools available to Claude
 
-**Server doesn't appear in Claude Desktop.** Check the paths in the config are absolute and correct,
-and that you fully quit with Cmd-Q rather than closing the window.
+| Tool                   | What it does                                                            |
+| ---------------------- | ----------------------------------------------------------------------- |
+| `whoami`               | Shows which Microsoft account is connected                              |
+| `search_mail`          | Searches across the mailbox                                             |
+| `list_recent_mail`     | Lists recent messages from folders such as inbox, sent items, or drafts |
+| `read_message`         | Reads the full body of a message                                        |
+| `create_draft`         | Creates an email draft                                                  |
+| `reply_draft`          | Creates a draft reply to an existing message                            |
+| `list_events`          | Lists calendar events within a date range                               |
+| `create_event`         | Creates a calendar event                                                |
+| `search_onedrive`      | Searches OneDrive files                                                 |
+| `list_onedrive_folder` | Lists the contents of a OneDrive folder                                 |
+| `read_onedrive_file`   | Reads the contents of a text-based OneDrive file                        |
 
-**You later change the scopes.** Delete the token cache and re-authenticate, or the cached token
-won't carry the new permissions.
+The exact behaviour depends on how these tools are implemented in `graph_mcp_server.py`, but the Microsoft permissions granted in Part A place the upper limit on what the server can access.
 
-**Basic auth / app passwords.** Any guide suggesting an app password with `imap-mail.outlook.com` is
-out of date. Microsoft disabled basic authentication for Outlook.com IMAP and POP in September
-2024. OAuth via Graph, as used here, is the supported path.
+---
+
+# How the connection works
+
+You do not need to understand this section to complete the setup, but it helps when troubleshooting.
+
+## The Entra application
+
+The Entra application gives the local server an identity when it connects to Microsoft Graph.
+
+It is configured as a public client because the code runs on your own computer. A desktop script cannot safely hide a client secret, so this setup uses a client ID and device-code authentication instead.
+
+The delegated permissions define what the application may do while acting on behalf of the signed-in user.
+
+## MSAL and the token cache
+
+The server uses Microsoft's authentication library, MSAL.
+
+During the first sign-in, Microsoft issues authentication tokens. MSAL stores the reusable account and token information in:
+
+```text
+~/.msgraph-mcp/token_cache.json
+```
+
+Before each Microsoft Graph request, the server asks MSAL for a valid access token. When possible, MSAL renews it silently using the cached authentication state.
+
+You may need to sign in again if the cached token is deleted, revoked, or no longer valid.
+
+## The MCP server
+
+`graph_mcp_server.py` is a FastMCP application that communicates with Claude Desktop over standard input and standard output.
+
+Claude Desktop launches the script as a local subprocess. When Claude decides to use a tool such as `search_mail`, it sends a JSON-RPC request to the server. The corresponding Python function runs, obtains a Microsoft access token, calls Microsoft Graph, and returns a smaller result to Claude.
+
+A typical request follows this path:
+
+```text
+Claude Desktop
+    ↕ stdio JSON-RPC
+graph_mcp_server.py
+    ↕ MSAL authentication
+Microsoft Graph API
+    ↕
+Outlook, Calendar, or OneDrive data
+```
+
+Claude Desktop does not connect directly to Microsoft Graph. Microsoft Graph does not connect directly to Anthropic. The local MCP server sits between them and handles the translation.
+
+---
+
+# Troubleshooting
+
+## The device-code flow does not start
+
+Check **Allow public client flows** in the Entra application's Authentication settings.
+
+Make sure it is set to **Enabled** and that you selected **Save** after changing it.
+
+## `whoami` shows the wrong account
+
+The wrong Microsoft account was used during Part C.
+
+Delete the token cache:
+
+```bash
+rm ~/.msgraph-mcp/token_cache.json
+```
+
+Then run the login command again:
+
+```bash
+export MSGRAPH_CLIENT_ID="<your client ID>"
+python graph_mcp_server.py login
+```
+
+This time, sign in with the personal Microsoft account whose mailbox you want to access.
+
+## The MCP server does not appear in Claude Desktop
+
+Check the following:
+
+* The Python path in `claude_desktop_config.json` is absolute.
+* The path to `graph_mcp_server.py` is absolute.
+* The virtual environment exists.
+* The JSON is valid.
+* Claude Desktop was fully quit with **Cmd-Q** before reopening.
+
+You can also test the Python path directly in Terminal:
+
+```bash
+/Users/YOUR_USERNAME/msgraph-mcp/.venv/bin/python \
+/Users/YOUR_USERNAME/msgraph-mcp/graph_mcp_server.py
+```
+
+If the server starts and waits without printing an error, the paths are probably correct. Press `Ctrl-C` to stop the manual test.
+
+## You changed the requested permissions
+
+Delete the cached token and sign in again.
+
+```bash
+rm ~/.msgraph-mcp/token_cache.json
+```
+
+A previously cached token may not include permissions added later.
+
+## Microsoft shows a consent error
+
+Record the exact error message and check:
+
+* The application supports personal Microsoft accounts.
+* Public client flows are enabled.
+* The correct client ID is being used.
+* The login is being completed with the intended personal account.
+* The requested permissions match the list in Part A.
+
+Do not start changing several settings at once. The wording of the Microsoft error usually points to the specific registration or consent problem.
+
+## A guide suggests an app password or basic IMAP authentication
+
+That is not the approach used here.
+
+This setup uses OAuth through Microsoft Graph. It does not store an Outlook password, and it does not rely on basic authentication against `imap-mail.outlook.com`.
+
+---
+
+# Security notes
+
+The token cache gives the local MCP server access to the permissions you approved. Treat it as sensitive.
+
+The file is stored here:
+
+```text
+~/.msgraph-mcp/token_cache.json
+```
+
+Do not upload it to GitHub, attach it to support tickets, or copy it to a shared folder.
+
+It is also a good idea to add the following entries to your project's `.gitignore` file:
+
+```gitignore
+.venv/
+token_cache.json
+__pycache__/
+*.pyc
+```
+
+If you no longer want the server to access the account, delete the token cache and remove the application's consent from your Microsoft account security settings.
+
+You can also remove the MCP server entry from:
+
+```text
+~/Library/Application Support/Claude/claude_desktop_config.json
+```
+
+---
+
+# Summary
+
+The built-in Microsoft 365 connection in Claude Desktop does not accept personal Outlook, Hotmail, or Live.com accounts. Registering your own Microsoft application removes that account-type limitation.
+
+Once the application is registered and the local MCP server is connected, Claude Desktop can work with your personal mailbox, calendar, and OneDrive through Microsoft Graph.
+
+The setup requires a few manual steps, but most of them are completed only once:
+
+1. Register the Entra application.
+2. Add the delegated permissions.
+3. Enable public client flows.
+4. Install the local Python server.
+5. Complete the first device-code sign-in.
+6. Add the server to Claude Desktop.
+7. Restart Claude and test it with `whoami`.
+
+After that, the cached Microsoft sign-in is reused automatically during normal use.
