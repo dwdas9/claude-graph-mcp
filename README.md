@@ -1,6 +1,9 @@
 # Connecting Claude Desktop to a personal Outlook or Hotmail account
 
-![](images/08-how-it-works.jpg)
+![A diagram showing Claude Desktop connecting to a local MCP server, which connects to Microsoft Graph, which connects to Outlook, Calendar, and OneDrive.](images/08-how-it-works.jpg)
+
+*Figure 1: How Claude Desktop connects to a personal Outlook or Hotmail account through a local MCP server and Microsoft Graph.*
+
 
 Claude Desktop can connect to Microsoft 365, but the built-in Microsoft connector is intended for work and school accounts. If you try to sign in with a personal address such as `@hotmail.com`, `@outlook.com`, or `@live.com`, the authentication is rejected.
 
