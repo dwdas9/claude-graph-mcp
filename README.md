@@ -15,17 +15,25 @@ This guide walks through the complete setup on macOS.
 
 ## What this setup can do
 
-| Capability                      | Available?     |
-| ------------------------------- | -------------- |
-| Read and search mail            | Yes            |
-| Create drafts and draft replies | Yes            |
-| Send mail                       | No             |
-| Read and create calendar events | Yes            |
-| Search and read OneDrive files  | Yes, read only |
+| Capability                                            | Available?     |
+| ----------------------------------------------------- | -------------- |
+| Read and search mail                                  | Yes            |
+| Create drafts and draft replies                       | Yes            |
+| Send mail                                             | No             |
+| Navigate mail folders and move messages between them  | Yes            |
+| Flag, categorize, and mark mail read or unread        | Yes            |
+| Create inbox rules that move mail into a folder       | Yes            |
+| Read and create calendar events                       | Yes            |
+| Search and read OneDrive files                        | Yes, read only |
+| Manage Microsoft To Do tasks                          | Yes            |
+| Search and create contacts                            | Yes            |
+| Delete anything (mail, calendar, folders, files, ...) | No             |
 
 The server does not request the `Mail.Send` permission. Claude can prepare a draft, but you must review and send it yourself from Outlook.
 
-This is intentional. It gives Claude access to the parts that are useful for research and drafting without allowing it to send messages from your account.
+The server also never deletes anything. No tool issues a delete against a message, event, folder, task, contact, or Drive item, and no tool moves anything to Deleted Items. One tool's name sounds like it might: `delete_mail_rule` removes an inbox-rule automation, not any email.
+
+This is intentional. It gives Claude access to the parts that are useful for research, organizing, and drafting, without allowing it to send messages from your account or remove anything from it.
 
 ## What you are setting up
 
@@ -113,18 +121,24 @@ User.Read
 Mail.ReadWrite
 Calendars.ReadWrite
 Files.Read.All
+MailboxSettings.ReadWrite
+Tasks.ReadWrite
+Contacts.ReadWrite
 offline_access
 ```
 
 What they are used for:
 
-| Permission            | Purpose                                              |
-| --------------------- | ---------------------------------------------------- |
-| `User.Read`           | Identify the signed-in Microsoft account             |
-| `Mail.ReadWrite`      | Read mail and create drafts                          |
-| `Calendars.ReadWrite` | Read and create calendar events                      |
-| `Files.Read.All`      | Read files from OneDrive                             |
-| `offline_access`      | Renew access without asking you to sign in each time |
+| Permission                  | Purpose                                                                         |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `User.Read`                 | Identify the signed-in Microsoft account                                        |
+| `Mail.ReadWrite`            | Read mail, create drafts, and organize mail (move, flag, categorize, mark read) |
+| `Calendars.ReadWrite`       | Read and create calendar events                                                 |
+| `Files.Read.All`            | Read files from OneDrive                                                        |
+| `MailboxSettings.ReadWrite` | Create and manage inbox rules                                                   |
+| `Tasks.ReadWrite`           | Read and create Microsoft To Do tasks                                           |
+| `Contacts.ReadWrite`        | Search and create contacts                                                      |
+| `offline_access`            | Renew access without asking you to sign in each time                            |
 
 `User.Read` is often added automatically.
 
@@ -132,9 +146,11 @@ The `offline_access` permission may appear under an OpenID-related group rather 
 
 Do not add `Mail.Send`.
 
+> No delete-capable permission is requested either. `Files.Read.All` is used instead of `Files.ReadWrite.All`, which would allow deleting Drive items, and none of the other permissions above grant delete rights. Nothing in this setup can delete a message, event, folder, task, contact, or Drive item.
+
 ## A6. Check the final permission list
 
-The final list should contain five delegated Microsoft Graph permissions and should not contain `Mail.Send`.
+The final list should contain eight delegated Microsoft Graph permissions and should not contain `Mail.Send`.
 
 ![Final permissions list](images/06-final-permissions.png)
 
@@ -365,23 +381,54 @@ Claude Desktop
     → your personal mailbox
 ```
 
+## Changing scopes later
+
+This guide's permission list has grown over time (see Part A5). If you set up the server before folder navigation, mail rules, To Do, or Contacts were added, your cached token was issued for the old, shorter scope list.
+
+This is exactly the scenario covered in [You changed the requested permissions](#you-changed-the-requested-permissions): delete the token cache and sign in again before the new tools will work.
+
+```bash
+rm ~/.msgraph-mcp/token_cache.json
+export MSGRAPH_CLIENT_ID="<your client ID from A3>"
+python graph_mcp_server.py login
+```
+
+Approve the new permissions when prompted. Until you do this, tools such as `create_mail_rule` or `list_task_lists` will fail with a permissions error even though `search_mail` keeps working.
+
 ## Tools available to Claude
 
-| Tool                   | What it does                                                            |
-| ---------------------- | ----------------------------------------------------------------------- |
-| `whoami`               | Shows which Microsoft account is connected                              |
-| `search_mail`          | Searches across the mailbox                                             |
-| `list_recent_mail`     | Lists recent messages from folders such as inbox, sent items, or drafts |
-| `read_message`         | Reads the full body of a message                                        |
-| `create_draft`         | Creates an email draft                                                  |
-| `reply_draft`          | Creates a draft reply to an existing message                            |
-| `list_events`          | Lists calendar events within a date range                               |
-| `create_event`         | Creates a calendar event                                                |
-| `search_onedrive`      | Searches OneDrive files                                                 |
-| `list_onedrive_folder` | Lists the contents of a OneDrive folder                                 |
-| `read_onedrive_file`   | Reads the contents of a text-based OneDrive file                        |
+| Tool                      | What it does                                                               |
+| ------------------------- | -------------------------------------------------------------------------- |
+| `whoami`                  | Shows which Microsoft account is connected                                 |
+| `search_mail`             | Searches across the mailbox                                                |
+| `list_recent_mail`        | Lists recent messages from folders such as inbox, sent items, or drafts    |
+| `read_message`            | Reads the full body of a message                                           |
+| `create_draft`            | Creates an email draft                                                     |
+| `reply_draft`             | Creates a draft reply to an existing message                               |
+| `list_mail_folders`       | Returns the mail folder tree from a given folder (or the top level)        |
+| `resolve_folder_path`     | Resolves a folder path like `Inbox/Bank/CIBC_Canada` to a folder id        |
+| `list_messages_in_folder` | Lists recent messages in a folder found by path                            |
+| `create_mail_folder`      | Creates a mail folder at a given path (or returns it if it already exists) |
+| `move_message`            | Moves a message to another folder                                          |
+| `flag_message`            | Sets or clears the follow-up flag on a message                             |
+| `categorize_message`      | Sets the category labels on a message                                      |
+| `mark_message_read`       | Marks a message read or unread                                             |
+| `list_mail_rules`         | Lists the inbox rules configured on the mailbox                            |
+| `create_mail_rule`        | Creates an inbox rule that moves matching mail into a folder               |
+| `delete_mail_rule`        | Deletes an inbox rule (the automation, not any email)                      |
+| `list_events`             | Lists calendar events within a date range                                  |
+| `create_event`            | Creates a calendar event                                                   |
+| `search_onedrive`         | Searches OneDrive files                                                    |
+| `list_onedrive_folder`    | Lists the contents of a OneDrive folder                                    |
+| `read_onedrive_file`      | Reads the contents of a text-based OneDrive file                           |
+| `list_task_lists`         | Lists Microsoft To Do task lists                                           |
+| `list_tasks`              | Lists tasks in a To Do list                                                |
+| `create_task`             | Creates a task in a To Do list                                             |
+| `complete_task`           | Marks a task completed (does not delete it)                                |
+| `search_contacts`         | Searches contacts by name or email address                                 |
+| `create_contact`          | Creates a contact                                                          |
 
-The exact behaviour depends on how these tools are implemented in `graph_mcp_server.py`, but the Microsoft permissions granted in Part A place the upper limit on what the server can access.
+The exact behaviour depends on how these tools are implemented in `graph_mcp_server.py`, but the Microsoft permissions granted in Part A place the upper limit on what the server can access. No tool here sends mail or deletes a message, event, folder, task, contact, or Drive item.
 
 ---
 
