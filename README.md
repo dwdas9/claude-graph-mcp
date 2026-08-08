@@ -442,6 +442,108 @@ Claude Desktop
     → your personal mailbox
 ```
 
+## Use multiple personal Microsoft accounts simultaneously
+
+You do **not** need another project folder, another copy of this server, another Python virtual environment, or another Entra application registration for each mailbox. One Entra application can request delegated access from multiple personal Microsoft accounts because the registration created in Part A supports personal Microsoft accounts.
+
+The client ID identifies the application, not the mailbox. The account selected during device login determines which mailbox, calendar, contacts, tasks, and OneDrive the delegated token can access. To keep accounts independent, run the same server once per account and give every instance a different token-cache path.
+
+The arrangement looks like this:
+
+```text
+One Entra application and client ID
+                 │
+                 ├── MCP server: ms-graph-das-d-hotmail
+                 │       └── token_cache.json
+                 │               └── das.d@hotmail.com
+                 │
+                 └── MCP server: ms-graph-dwai-hotmail
+                         └── token_cache_dwaipayan.json
+                                 └── dwaipayan.das@hotmail.com
+```
+
+Both entries use the same `graph_mcp_server.py`, virtual environment, client ID, authority, and delegated permission list. Claude Desktop launches them as separate processes, so both accounts are available at the same time.
+
+### 1. Choose a separate cache path
+
+Leave the first account's existing cache in place. Choose a new filename for the additional account:
+
+```text
+~/.msgraph-mcp/token_cache.json
+~/.msgraph-mcp/token_cache_dwaipayan.json
+```
+
+Never point two account entries at the same cache file. This server selects the first account found in its cache, so sharing a cache makes account selection ambiguous and can cause a request to use the wrong mailbox.
+
+### 2. Sign in to the additional account
+
+From the `msgraph-mcp` directory, run the login command with the same client ID and the new cache path:
+
+```bash
+MSGRAPH_CLIENT_ID="<your client ID from A3>" \
+MSGRAPH_TOKEN_CACHE="$HOME/.msgraph-mcp/token_cache_dwaipayan.json" \
+.venv/bin/python graph_mcp_server.py login
+```
+
+Open the displayed device-login page, enter the code, and explicitly select the additional Microsoft account. A private browser window can help if Microsoft automatically selects an account that is already signed in.
+
+The command should finish with a message similar to:
+
+```text
+Authenticated. Token cached at /Users/YOUR_USERNAME/.msgraph-mcp/token_cache_dwaipayan.json
+```
+
+Creating this cache does not create another Entra identity or application. It records the additional user's consent and reusable sign-in state for the existing public-client application.
+
+### 3. Add one Claude Desktop entry per account
+
+Give each entry a descriptive, unique name and set `MSGRAPH_TOKEN_CACHE` explicitly. For example:
+
+```json
+{
+  "mcpServers": {
+    "ms-graph-das-d-hotmail": {
+      "command": "/Users/YOUR_USERNAME/msgraph-mcp/.venv/bin/python",
+      "args": [
+        "/Users/YOUR_USERNAME/msgraph-mcp/graph_mcp_server.py"
+      ],
+      "env": {
+        "MSGRAPH_CLIENT_ID": "<your client ID from A3>",
+        "MSGRAPH_TOKEN_CACHE": "/Users/YOUR_USERNAME/.msgraph-mcp/token_cache.json"
+      }
+    },
+    "ms-graph-dwai-hotmail": {
+      "command": "/Users/YOUR_USERNAME/msgraph-mcp/.venv/bin/python",
+      "args": [
+        "/Users/YOUR_USERNAME/msgraph-mcp/graph_mcp_server.py"
+      ],
+      "env": {
+        "MSGRAPH_CLIENT_ID": "<the same client ID from A3>",
+        "MSGRAPH_TOKEN_CACHE": "/Users/YOUR_USERNAME/.msgraph-mcp/token_cache_dwaipayan.json"
+      }
+    }
+  }
+}
+```
+
+If your installation is in another directory, use its absolute paths. Preserve any other MCP servers and top-level Claude Desktop settings already present in the configuration file.
+
+Quit Claude Desktop completely with **Cmd-Q**, reopen it, and start a new chat after saving the configuration.
+
+### 4. Verify and use both accounts
+
+Ask Claude to call `whoami` through each named server. Confirm that each server reports the expected email address before doing mailbox or calendar work.
+
+You can then make the target explicit in requests:
+
+```text
+Use ms-graph-das-d-hotmail to search for recent bank messages.
+Use ms-graph-dwai-hotmail to show tomorrow's calendar.
+Compare unread messages across both Microsoft accounts.
+```
+
+Repeat the same process for more accounts: create one unique token-cache file, complete one device login, and add one uniquely named MCP entry per account. A separate Entra registration is only necessary if you deliberately want different application ownership, permissions, or consent administration.
+
 ## Changing scopes later
 
 This guide's permission list has grown over time (see Part A5). If you set up the server before folder navigation, mail rules, To Do, or Contacts were added, your cached token was issued for the old, shorter scope list.
