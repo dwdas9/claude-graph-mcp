@@ -232,6 +232,67 @@ starts the MCP server and waits for JSON-RPC requests through standard input. It
 
 The `login` subcommand calls the authentication path directly, displays the device code, saves the token cache, and exits. This makes the first sign-in much easier to complete and troubleshoot.
 
+## What happens during login
+
+The login uses OAuth 2.0 **device authorization flow**. This flow is designed for an application that cannot conveniently open a browser or receive a browser redirect. The MCP server never asks for, sees, or stores your Microsoft password.
+
+```mermaid
+sequenceDiagram
+    participant T as Terminal / MCP server
+    participant M as Microsoft identity platform
+    participant B as Your browser
+    participant C as Local token cache
+    participant G as Microsoft Graph
+
+    T->>M: 1. Request a device login (client ID + permissions)
+    M-->>T: 2. Return a short-lived code and login URL
+    T-->>B: 3. Show the URL and code to you
+    B->>M: 4. You enter the code and sign in to Microsoft
+    M-->>B: 5. Show permissions and record your consent
+    loop While you complete sign-in
+        T->>M: 6. Has this code been approved yet?
+        M-->>T: Pending or approved
+    end
+    M-->>T: 7. Issue OAuth tokens after approval
+    T->>C: 8. Save the reusable sign-in locally
+    T->>G: 9. Call Graph with an access token
+    G-->>T: 10. Return mail, calendar, files, tasks, or contacts
+```
+
+Here is what each piece means:
+
+* **The login link** points to a Microsoft-owned page. It is a general device-login page, not a page hosted by this project. Always check that the hostname belongs to Microsoft before entering credentials.
+* **The displayed code** temporarily connects the browser session to the login request waiting in the terminal. It is not your password, client ID, access token, or MFA code. It expires after a short time and is useful only for that pending login.
+* **The client ID** identifies the Entra application you registered. It tells Microsoft which application is requesting access and which registration settings apply. A client ID is a public identifier, not a secret.
+* **Your Microsoft sign-in and MFA** happen entirely on Microsoft's website. Microsoft tells the local server only whether authorization is still pending, was declined, expired, or succeeded.
+* **The permissions (scopes)** describe what the application is asking to do, such as reading and organizing mail. The consent screen is where you approve those permissions. The code deliberately does not request `Mail.Send`.
+* **The polling** is why the terminal appears to wait after printing the code. The server periodically asks Microsoft whether you have finished signing in. No browser callback to your computer is required.
+* **The access token** is a short-lived credential that the server attaches to Microsoft Graph requests. Graph checks the token before returning account data.
+* **The cached sign-in** is stored in `~/.msgraph-mcp/token_cache.json`. It lets MSAL obtain fresh access tokens later without showing the device-login page every time. Treat this file as sensitive: anyone who can use it may be able to act with the permissions you approved.
+
+The code and the tokens serve different purposes:
+
+| Item | What it proves or identifies | Lifetime | Secret? |
+| --- | --- | --- | --- |
+| Client ID | Which registered application is asking | Long-lived | No |
+| Device code | Which pending terminal login you are approving | Short-lived, one login | Treat as temporary-sensitive |
+| Microsoft password/MFA | That you control the Microsoft account | Used only by Microsoft during sign-in | Yes; never seen by this server |
+| Access token | That the app currently has approved Graph access | Short-lived | Yes |
+| Cached authentication state | Lets MSAL renew access without another interactive login | Until expired, revoked, or removed | Yes |
+
+After the first successful login, a normal tool call follows the shorter path below:
+
+```mermaid
+flowchart LR
+    Claude[Claude Desktop] -->|MCP tool call over stdio| Server[Local graph_mcp_server.py]
+    Server -->|Load cache and renew token if needed| Microsoft[Microsoft identity platform]
+    Server -->|Access token| Graph[Microsoft Graph]
+    Graph --> Data[Outlook / Calendar / OneDrive / To Do / Contacts]
+    Data --> Graph --> Server --> Claude
+```
+
+You will see the link and code again only when silent authentication cannot continue—for example, if the cache was removed, consent was revoked, the account requires a fresh sign-in, or the requested permissions changed. Run `python graph_mcp_server.py login` in a visible terminal in that situation; do not try to complete an interactive login through Claude's hidden MCP process.
+
 ---
 
 # Part D: Add the server to Claude Desktop
@@ -481,6 +542,103 @@ Claude Desktop does not connect directly to Microsoft Graph. Microsoft Graph doe
 ---
 
 # Troubleshooting
+
+## Claude Desktop log files on macOS
+
+Claude Desktop normally writes MCP diagnostics under:
+
+```text
+~/Library/Logs/Claude/
+```
+
+The most useful files for this server are:
+
+| Log file | What it contains | Use it when |
+| --- | --- | --- |
+| `mcp-server-microsoft-graph.log` | Launch command, MCP requests and responses, server stderr, Microsoft login prompts, Graph request status, shutdowns, and timeouts for this server | Diagnosing almost any `microsoft-graph` failure |
+| `mcp.log` | Combined lifecycle messages for all configured MCP servers | Checking whether Claude discovered and started the server |
+| `main.log` | General Claude Desktop application events and configuration errors | Claude does not load the MCP configuration at all |
+
+List the available Claude logs:
+
+```bash
+ls -la ~/Library/Logs/Claude
+```
+
+Read the latest entries for this server:
+
+```bash
+tail -n 100 ~/Library/Logs/Claude/mcp-server-microsoft-graph.log
+```
+
+Search for the most useful events without printing the entire log:
+
+```bash
+rg -n "Initializing|Server started|tools/call|To sign in|HTTP Request|error|cancelled|Shutting down" \
+  ~/Library/Logs/Claude/mcp-server-microsoft-graph.log
+```
+
+Follow new entries while reproducing a problem in Claude:
+
+```bash
+tail -f ~/Library/Logs/Claude/mcp-server-microsoft-graph.log
+```
+
+Press `Ctrl-C` when finished following the log. The server writes diagnostics to stderr because stdout is reserved for MCP JSON-RPC messages. Claude captures that stderr output in the server-specific log.
+
+Do not post a complete log publicly without reviewing it. Logs can contain local filesystem paths, account details, email metadata, errors returned by Microsoft Graph, and short-lived device-login codes. The token cache itself is stored separately and must never be shared:
+
+```text
+~/.msgraph-mcp/token_cache.json
+```
+
+## A quick troubleshooting workflow
+
+1. Confirm that both configured paths exist and are absolute:
+
+   ```bash
+   ls -l /absolute/path/to/msgraph-mcp/.venv/bin/python
+   ls -l /absolute/path/to/msgraph-mcp/graph_mcp_server.py
+   ```
+
+2. Check that the Claude configuration is valid JSON:
+
+   ```bash
+   python3 -m json.tool \
+     ~/Library/Application\ Support/Claude/claude_desktop_config.json >/dev/null \
+     && echo "Claude configuration is valid JSON"
+   ```
+
+3. Inspect `mcp-server-microsoft-graph.log`. A healthy startup contains `Server started and connected successfully`, followed by `initialize` and `tools/list` messages.
+
+4. If a tool reports that Microsoft authentication is required, run the explicit login command in a visible terminal:
+
+   ```bash
+   export MSGRAPH_CLIENT_ID="<your client ID>"
+   /absolute/path/to/msgraph-mcp/.venv/bin/python \
+     /absolute/path/to/msgraph-mcp/graph_mcp_server.py login
+   ```
+
+5. Fully quit Claude Desktop with **Cmd-Q**, reopen it, start a new chat, and ask:
+
+   ```text
+   Use microsoft-graph whoami to check which Microsoft account is connected
+   ```
+
+Normal MCP tool calls never start an interactive device login. If cached authentication is unavailable, they return an immediate error telling you to run the visible `login` command. This prevents Claude from appearing frozen while an unseen device flow waits in the background.
+
+## Common log signatures
+
+| Log message or behaviour | Meaning | Action |
+| --- | --- | --- |
+| `ENOENT`, `spawn ... failed`, or a configured path does not exist | Claude is using a stale Python or server path | Update `command` and `args` to absolute, existing paths, then restart Claude |
+| `MSGRAPH_CLIENT_ID is not set` | The `env` block is missing the application client ID | Add `MSGRAPH_CLIENT_ID` to this server's Claude configuration |
+| `Microsoft authentication is required` | No usable cached token is available | Run the explicit `login` command, then retry |
+| `To sign in ... enter the code ...` during an explicit `login` command | The device flow is correctly waiting for browser approval | Open the Microsoft URL and enter the short-lived code |
+| HTTP `401 Unauthorized` | The token is expired, revoked, invalid, or for the wrong registration | Run the explicit login again; remove the cache first if necessary |
+| HTTP `403 Forbidden` | The signed-in account or application lacks the requested permission | Check delegated Graph permissions and re-consent after changing scopes |
+| A tool returns immediately on retry after an earlier timeout | A newly started process loaded authentication that the older process did not have | With the current server code this should be avoided by cache reload and fail-fast authentication; restart Claude if it is still running older code |
+| `Server started and connected successfully`, but no `tools/call` appears | Claude launched the server but did not invoke the requested tool | Explicitly name `microsoft-graph` and the tool, such as `whoami`, in the prompt |
 
 ## The device-code flow does not start
 

@@ -119,14 +119,42 @@ _app = msal.PublicClientApplication(
 )
 
 
-def _token() -> str:
-    """Return a valid access token, refreshing or prompting as needed."""
+def _acquire_token_silent() -> Optional[str]:
+    """Return a cached/renewed token when one is available."""
     accounts = _app.get_accounts()
-    if accounts:
-        result = _app.acquire_token_silent(SCOPES, account=accounts[0])
-        if result and "access_token" in result:
-            _persist_cache()
-            return result["access_token"]
+    if not accounts:
+        return None
+    result = _app.acquire_token_silent(SCOPES, account=accounts[0])
+    if result and "access_token" in result:
+        _persist_cache()
+        return result["access_token"]
+    return None
+
+
+def _token() -> str:
+    """Return a valid token, allowing prompts only for the `login` command."""
+    token = _acquire_token_silent()
+    if token:
+        return token
+
+    # The explicit `login` command may update the cache while Claude Desktop
+    # already has this module running. Reload it once before deciding that an
+    # interactive sign-in is required.
+    if CACHE_PATH.exists():
+        _cache.deserialize(CACHE_PATH.read_text())
+        token = _acquire_token_silent()
+        if token:
+            return token
+
+    # A device prompt is invisible in a normal stdio MCP session. Starting the
+    # flow here would make the tool appear frozen until the client times out.
+    # Only the explicit terminal command is allowed to start interactive auth.
+    if not (len(sys.argv) > 1 and sys.argv[1] == "login"):
+        raise RuntimeError(
+            "Microsoft authentication is required. Run this command in a "
+            "visible terminal, complete the device login, then retry the MCP "
+            f"tool: {sys.executable} {pathlib.Path(__file__).resolve()} login"
+        )
 
     # No cached account, or refresh failed -> device code flow.
     flow = _app.initiate_device_flow(scopes=SCOPES)
