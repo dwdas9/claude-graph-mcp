@@ -207,28 +207,8 @@ The `login` subcommand runs the authentication path directly, shows the device c
 
 The login uses OAuth 2.0 device authorization flow. Your Microsoft password and MFA stay on Microsoft's site; the local server never asks for or stores them.
 
-```mermaid
-sequenceDiagram
-    participant T as Terminal / MCP server
-    participant M as Microsoft identity platform
-    participant B as Your browser
-    participant C as Local token cache
-    participant G as Microsoft Graph
-
-    T->>M: 1. Request a device login (client ID + permissions)
-    M-->>T: 2. Return a short-lived code and login URL
-    T-->>B: 3. Show the URL and code to you
-    B->>M: 4. You enter the code and sign in to Microsoft
-    M-->>B: 5. Show permissions and record your consent
-    loop While you complete sign-in
-        T->>M: 6. Has this code been approved yet?
-        M-->>T: Pending or approved
-    end
-    M-->>T: 7. Issue OAuth tokens after approval
-    T->>C: 8. Save the reusable sign-in locally
-    T->>G: 9. Call Graph with an access token
-    G-->>T: 10. Return mail, calendar, files, tasks, or contacts
-```
+<!-- Diagram source: images/device-login-flow.mmd -->
+![Sequence diagram of the Microsoft device-login flow](images/device-login-flow.svg)
 
 A few pieces are worth distinguishing:
 
