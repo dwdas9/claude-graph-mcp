@@ -208,7 +208,7 @@ The `login` subcommand runs the authentication path directly, shows the device c
 The login uses OAuth 2.0 device authorization flow. Your Microsoft password and MFA stay on Microsoft's site; the local server never asks for or stores them.
 
 <!-- Diagram source: images/device-login-flow.mmd -->
-![Sequence diagram of the Microsoft device-login flow](images/device-login-flow.svg)
+![Sequence diagram of the Microsoft device-login flow](images/device-login-flow.png)
 
 A few pieces are worth distinguishing:
 
